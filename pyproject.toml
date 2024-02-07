@@ -6,9 +6,16 @@ authors = ["Kina <CrafterKina@users.noreply.github.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = "^3.12"
 pyworld = "^0.3.4"
 voicevox-client = "^0.2.3"
+numpy = "^1.26.3"
+llvmlite = "0.42.0rc1"
+numba = "0.59.0rc1"
+librosa = "^0.10.1"
+mypy = "^1.8.0"
+setuptools = "^69.0.3"
+pandas = "^2.2.0"
 
 
 [build-system]
