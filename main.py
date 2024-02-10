@@ -1,9 +1,12 @@
 import asyncio
 import io
 import itertools
+import json
 import math
 import os
 import pathlib
+import uuid
+
 import matplotlib.pyplot as plt
 import re
 import tempfile
@@ -148,7 +151,7 @@ def vowel_mask(frame_segmentation, size):
     result = np.ones(size)
     for s, e, p in frame_segmentation:
         if is_vowel(p):
-            result[s:e+1] = 0
+            result[s:e + 1] = 0
 
     return result
 
@@ -165,7 +168,8 @@ hz_to_pitch = 0.00625
 
 
 async def main():
-    proc = await asyncio.create_subprocess_shell(f"adinrec.exe {utterance}", shell=True, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    proc = await asyncio.create_subprocess_shell(f"adinrec.exe {utterance}", shell=True, stdout=asyncio.subprocess.PIPE,
+                                                 stderr=asyncio.subprocess.PIPE)
 
     await proc.stderr.readuntil(b'please speak')
     print("please speak")
@@ -261,6 +265,52 @@ async def main():
         f.write("\n".join([
             f"{s:.7f} {e:.7f} {p}" for s, e, p in frame_segmentation
         ]).encode())
+
+    with open("voice.vvproj", mode="w") as f:
+        key = str(uuid.uuid4())
+        json.dump({
+            "appVersion": "0.14.11",
+            "audioKeys": [key],
+            "audioItems": {
+                key: {
+                    "text": transcript,
+                    "engineId": "074fc39e-678b-4c13-8916-ffca8d505d1d",
+                    "styleId": speaker,
+                    "query": {
+                        "accentPhrases": [
+                            {
+                                "moras": [(
+                                    {
+                                        "text": mora.text,
+                                        "consonant": mora.consonant,
+                                        "consonantLength": mora.consonant_length,
+                                        "vowel": mora.vowel,
+                                        "vowelLength": mora.vowel_length,
+                                        "pitch": mora.pitch,
+                                    } if mora.consonant is not None else {
+                                        "text": mora.text,
+                                        "vowel": mora.vowel,
+                                        "vowelLength": mora.vowel_length,
+                                        "pitch": mora.pitch,
+                                    }
+                                ) for mora in accent_phrase.moras],
+                                "accent": accent_phrase.accent,
+                                "isInterrogative": accent_phrase.is_interrogative,
+                            } for accent_phrase in audio_query.accent_phrases
+                        ],
+                        "speedScale": audio_query.speed_scale,
+                        "pitchScale": audio_query.pitch_scale,
+                        "intonationScale": audio_query.intonation_scale,
+                        "volumeScale": audio_query.volume_scale,
+                        "prePhonemeLength": audio_query.pre_phoneme_length,
+                        "postPhonemeLength": audio_query.post_phoneme_length,
+                        "outputSamplingRate": audio_query.output_sampling_rate,
+                        "outputStereo": audio_query.output_stereo,
+                        "kana": audio_query.kana,
+                    }
+                }
+            }
+        }, f)
 
 
 if __name__ == '__main__':
