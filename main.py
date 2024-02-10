@@ -50,7 +50,7 @@ def make_sequential_gram_dfa(count: int) -> str:
     )
 
 
-async def phoneme_segmentation(gram_dfa, gram_dict):
+async def phoneme_segmentation(utterance, gram_dfa, gram_dict):
     with (
         tempfile.NamedTemporaryFile(delete=True, suffix=".dfa", delete_on_close=False) as dfa_file,
         tempfile.NamedTemporaryFile(delete=True, suffix=".dict", delete_on_close=False) as dict_file
@@ -75,6 +75,8 @@ async def phoneme_segmentation(gram_dfa, gram_dict):
         while result is None:
             line = await proc.stdout.readline()
             print(line.decode('shift_jis'))
+            if b'search failed' in line:
+                raise ValueError()
             if b'begin forced alignment' in line:
                 result = (await proc.stdout.readuntil(b'end forced alignment')).decode("shift_jis")
 
@@ -155,15 +157,24 @@ phoneme_pattern = re.compile(r"^\[\s*(\d+)\s*(\d+)]\s*[\d\-.]+\s*(.+?)\r?$", fla
 
 transcript = "本日は晴天なり"
 speaker = 8
-intonation_modifier = 1
-utterance = "./rawvoice.wav"
+utterance = "./record.wav"
 outfile = "./output.wav"
 force_pitch = False
 base_pitch = 5.775
+hz_to_pitch = 0.00625
 
 
 async def main():
+    proc = await asyncio.create_subprocess_shell(f"adinrec.exe {utterance}", shell=True, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+
+    await proc.stderr.readuntil(b'please speak')
+    print("please speak")
+
+    stdout, stderr = await proc.communicate()
+    print(stderr.decode())
+
     x, fs = soundfile.read(utterance)
+
     async with Client() as client:
         audio_query = await client.create_audio_query(
             transcript, speaker=speaker
@@ -183,7 +194,7 @@ async def main():
         print(gram_dfa)
         print(gram_dict)
 
-        frame_segmentation = await phoneme_segmentation(gram_dfa, gram_dict)
+        frame_segmentation = await phoneme_segmentation(utterance, gram_dfa, gram_dict)
 
         f0, sp, ap = pyworld.wav2world(x, fs, frame_period=10.)
         f0 = ma.masked_equal(f0, 0.)
@@ -216,7 +227,6 @@ async def main():
         for mora in morae:
             if mora.consonant:
                 mora.consonant_length = next(phoneme_lengths_iter)
-                # z = np.mean(ma.filled(ma.asanyarray([next(z_iter), next(z_iter)]), 0))
                 next(z_iter)
 
             z = next(z_iter)
@@ -224,7 +234,7 @@ async def main():
                 z = 0
 
             mora.vowel_length = next(phoneme_lengths_iter)
-            mora.pitch = base_pitch + z * 0.00625
+            mora.pitch = base_pitch + z * hz_to_pitch
 
         audio_query.post_phoneme_length = next(phoneme_lengths_iter)
 
