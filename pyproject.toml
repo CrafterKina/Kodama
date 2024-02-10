@@ -16,6 +16,7 @@ librosa = "^0.10.1"
 mypy = "^1.8.0"
 setuptools = "^69.0.3"
 pandas = "^2.2.0"
+matplotlib = "^3.8.2"
 
 
 [build-system]
