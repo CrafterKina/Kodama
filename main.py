@@ -123,7 +123,7 @@ def savefig(figlist, log=True):
 
 def align_array(f0, f0_):
     f0 = ma.masked_equal(f0, 0.)
-    f0 = (f0 - np.mean(f0)) * intonation_modifier + np.mean(f0)
+    f0 = (f0 - np.mean(f0)) + np.mean(f0)
     if f0_.size > f0.size:
         f0 = np.pad(f0, (0, f0_.size - f0.size), mode="edge")
         f0_ = f0_[:f0.size]
@@ -142,14 +142,24 @@ def align_array(f0, f0_):
     return f0
 
 
-phoneme_pattern = re.compile(r"^\[\s*(\d+)\s*(\d+)]\s*[\d\-.]+\s*(.+)$", flags=re.MULTILINE)
+def vowel_mask(frame_segmentation, size):
+    result = np.ones(size)
+    for s, e, p in frame_segmentation:
+        if is_vowel(p):
+            result[s:e+1] = 0
+
+    return result
+
+
+phoneme_pattern = re.compile(r"^\[\s*(\d+)\s*(\d+)]\s*[\d\-.]+\s*(.+?)\r?$", flags=re.MULTILINE)
 
 transcript = "本日は晴天なり"
 speaker = 8
 intonation_modifier = 1
 utterance = "./rawvoice.wav"
 outfile = "./output.wav"
-force_pitch = True
+force_pitch = False
+base_pitch = 5.775
 
 
 async def main():
@@ -178,27 +188,24 @@ async def main():
         f0, sp, ap = pyworld.wav2world(x, fs, frame_period=10.)
         f0 = ma.masked_equal(f0, 0.)
 
-        # Juliusがスピーチ外とした部分を除去して補間
-        f0[:frame_segmentation[0][1]] = ma.masked
-        f0[frame_segmentation[-1][0]:] = ma.masked
-        f0 = ma.filled(f0, np.nan)
-        f0 = ma.masked_invalid(pd.Series(f0).
+        f0 = ma.array(f0, mask=vowel_mask(frame_segmentation, f0.shape))
+
+        f0 = ma.masked_invalid(pd.Series(ma.filled(f0, np.nan)).
                                interpolate(method='akima', limit_area='inside').
                                interpolate(method='linear', limit_area='outside', limit_direction='both').
-                               to_numpy(na_value=np.nan), np.nan
+                               to_numpy(na_value=np.nan)
                                )
 
-        f0[:frame_segmentation[0][1]] = ma.masked
-        f0[frame_segmentation[-1][0]:] = ma.masked
+        f0 = ma.array(f0, mask=vowel_mask(frame_segmentation, f0.shape))
 
-        zscores = (f0 - np.mean(f0)) * intonation_modifier
+        zscores = f0 - np.mean(f0)
 
         second_segmentation = [
             (begin * 0.01, (end + 1) * 0.01) for begin, end, _ in frame_segmentation
         ]
 
         phoneme_lengths = [e - s for s, e in second_segmentation]
-        zs = [np.max(zscores[s:e]) for s, e, _ in frame_segmentation]
+        zs = [np.mean(zscores[s:e]) for s, e, _ in frame_segmentation]
 
         phoneme_lengths_iter = iter(phoneme_lengths)
         z_iter = iter(zs)
@@ -217,7 +224,7 @@ async def main():
                 z = 0
 
             mora.vowel_length = next(phoneme_lengths_iter)
-            mora.pitch = 5.75 + z * 0.0125
+            mora.pitch = base_pitch + z * 0.00625
 
         audio_query.post_phoneme_length = next(phoneme_lengths_iter)
 
@@ -232,7 +239,6 @@ async def main():
         f0_, sp_, ap_ = pyworld.wav2world(x_, fs_, frame_period=5.)
         f0, _, _ = pyworld.wav2world(x, fs_, frame_period=5.)
         f0 = align_array(f0, f0_)
-        savefig([f0, f0_])
 
         resp = pyworld.synthesize(f0, sp_, ap_, 24000, frame_period=5.)
 
