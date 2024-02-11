@@ -1,3 +1,15 @@
+"""
+Copyright 2024 Kina
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+    http://www.apache.org/licenses/LICENSE-2.0
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 import asyncio
 import io
 import json
@@ -6,31 +18,19 @@ import tempfile
 import uuid
 from collections.abc import Iterable
 
+import click
 import librosa
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.ma as ma
 import pyworld
-from scipy.interpolate import Akima1DInterpolator, interp1d
+from scipy.interpolate import Akima1DInterpolator
 import soundfile
 from voicevox import Client
 
-from yomi2voca import yomi2voca
+from kodama.yomi2voca import yomi2voca
 
 phoneme_pattern = re.compile(r"^\[\s*(\d+)\s*(\d+)]\s*[\d\-.]+\s*(.+?)\r?$", flags=re.MULTILINE)
-
-julius_executable = "julius.exe"
-hmmdefs = "hmmdefs_monof_mix16_gid.binhmm"
-adinrec_executable = "adinrec.exe"
-
-
-transcript = "本日は晴天なり"
-speaker = 8
-utterance = "./record.wav"
-outfile = "./output.wav"
-force_pitch = False
-base_pitch = 5.775
-hz_to_pitch = 0.00625
 
 
 def make_words(voca: str, silence_at_ends: bool = True) -> list[str]:
@@ -58,7 +58,7 @@ def make_sequential_gram_dfa(count: int) -> str:
     )
 
 
-async def phoneme_segmentation(utterance, gram_dfa, gram_dict):
+async def phoneme_segmentation(utterance, julius_executable, hmmdefs, gram_dfa, gram_dict):
     with (
         tempfile.NamedTemporaryFile(delete=True, suffix=".dfa", delete_on_close=False) as dfa_file,
         tempfile.NamedTemporaryFile(delete=True, suffix=".dict", delete_on_close=False) as dict_file
@@ -169,8 +169,66 @@ def vowel_mask(frame_segmentation, size):
     return result
 
 
-async def main():
-    proc = await asyncio.create_subprocess_shell(f"{adinrec_executable} {utterance}", shell=True, stdout=asyncio.subprocess.PIPE,
+def make_vvproj(audio_query, speaker, transcript):
+    key = str(uuid.uuid4())
+    return {
+        "appVersion": "0.14.11",
+        "audioKeys": [key],
+        "audioItems": {
+            key: {
+                "text": transcript,
+                "engineId": "074fc39e-678b-4c13-8916-ffca8d505d1d",
+                "styleId": speaker,
+                "query": {
+                    "accentPhrases": [
+                        {
+                            "moras": [(
+                                {
+                                    "text": mora.text,
+                                    "consonant": mora.consonant,
+                                    "consonantLength": mora.consonant_length,
+                                    "vowel": mora.vowel,
+                                    "vowelLength": mora.vowel_length,
+                                    "pitch": mora.pitch,
+                                } if mora.consonant is not None else {
+                                    "text": mora.text,
+                                    "vowel": mora.vowel,
+                                    "vowelLength": mora.vowel_length,
+                                    "pitch": mora.pitch,
+                                }
+                            ) for mora in accent_phrase.moras],
+                            "accent": accent_phrase.accent,
+                            "isInterrogative": accent_phrase.is_interrogative,
+                        } for accent_phrase in audio_query.accent_phrases
+                    ],
+                    "speedScale": audio_query.speed_scale,
+                    "pitchScale": audio_query.pitch_scale,
+                    "intonationScale": audio_query.intonation_scale,
+                    "volumeScale": audio_query.volume_scale,
+                    "prePhonemeLength": audio_query.pre_phoneme_length,
+                    "postPhonemeLength": audio_query.post_phoneme_length,
+                    "outputSamplingRate": audio_query.output_sampling_rate,
+                    "outputStereo": audio_query.output_stereo,
+                    "kana": audio_query.kana,
+                }
+            }
+        }
+    }
+
+
+async def main(julius_executable,
+               hmmdefs,
+               adinrec_executable,
+               transcript,
+               speaker,
+               utterance,
+               outfile,
+               labfile,
+               outtype,
+               base_pitch,
+               hz_to_pitch):
+    proc = await asyncio.create_subprocess_shell(f"{adinrec_executable} {utterance}", shell=True,
+                                                 stdout=asyncio.subprocess.PIPE,
                                                  stderr=asyncio.subprocess.PIPE)
     print("waiting record instance...")
     await proc.stderr.readuntil(b'please speak')
@@ -200,7 +258,7 @@ async def main():
         print(gram_dfa)
         print(gram_dict)
 
-        frame_segmentation = await phoneme_segmentation(utterance, gram_dfa, gram_dict)
+        frame_segmentation = await phoneme_segmentation(utterance, julius_executable, hmmdefs, gram_dfa, gram_dict)
 
         f0, sp, ap = pyworld.wav2world(x, fs, frame_period=10.)
         f0 = ma.masked_equal(f0, 0.)
@@ -245,7 +303,7 @@ async def main():
         except Exception as e:
             print(e)
 
-    if force_pitch:
+    if outtype == "force_pitch":
         x_, fs_ = soundfile.read(io.BytesIO(resp))
         x = librosa.resample(x, orig_sr=fs, target_sr=fs_)
         f0_, sp_, ap_ = pyworld.wav2world(x_, fs_, frame_period=5.)
@@ -255,61 +313,48 @@ async def main():
         resp = pyworld.synthesize(f0, sp_, ap_, 24000, frame_period=5.)
 
         soundfile.write(outfile, resp, samplerate=24000)
+    elif outtype == "vvproj":
+        with open(outfile, mode="w") as f:
+            json.dump(make_vvproj(audio_query, speaker, transcript), f)
     else:
         with open(outfile, mode="wb") as f:
             f.write(resp)
 
-    with open("voice.lab", "wb") as f:
-        f.write("\n".join([
-            f"{s:.7f} {e:.7f} {p}" for s, e, p in frame_segmentation
-        ]).encode())
-
-    with open("voice.vvproj", mode="w") as f:
-        key = str(uuid.uuid4())
-        json.dump({
-            "appVersion": "0.14.11",
-            "audioKeys": [key],
-            "audioItems": {
-                key: {
-                    "text": transcript,
-                    "engineId": "074fc39e-678b-4c13-8916-ffca8d505d1d",
-                    "styleId": speaker,
-                    "query": {
-                        "accentPhrases": [
-                            {
-                                "moras": [(
-                                    {
-                                        "text": mora.text,
-                                        "consonant": mora.consonant,
-                                        "consonantLength": mora.consonant_length,
-                                        "vowel": mora.vowel,
-                                        "vowelLength": mora.vowel_length,
-                                        "pitch": mora.pitch,
-                                    } if mora.consonant is not None else {
-                                        "text": mora.text,
-                                        "vowel": mora.vowel,
-                                        "vowelLength": mora.vowel_length,
-                                        "pitch": mora.pitch,
-                                    }
-                                ) for mora in accent_phrase.moras],
-                                "accent": accent_phrase.accent,
-                                "isInterrogative": accent_phrase.is_interrogative,
-                            } for accent_phrase in audio_query.accent_phrases
-                        ],
-                        "speedScale": audio_query.speed_scale,
-                        "pitchScale": audio_query.pitch_scale,
-                        "intonationScale": audio_query.intonation_scale,
-                        "volumeScale": audio_query.volume_scale,
-                        "prePhonemeLength": audio_query.pre_phoneme_length,
-                        "postPhonemeLength": audio_query.post_phoneme_length,
-                        "outputSamplingRate": audio_query.output_sampling_rate,
-                        "outputStereo": audio_query.output_stereo,
-                        "kana": audio_query.kana,
-                    }
-                }
-            }
-        }, f)
+    if labfile is not None:
+        with open(labfile, "wb") as f:
+            f.write("\n".join([
+                f"{s:.7f} {e:.7f} {p}" for s, e, p in frame_segmentation
+            ]).encode())
 
 
-if __name__ == '__main__':
-    asyncio.run(main(), debug=True)
+@click.command()
+@click.option("-j", "--julius", "julius_executable", required=True, type=click.Path(exists=True, executable=True),
+              help="Path to the julius")
+@click.option("-h", "--hmmdefs", "hmmdefs", required=True, type=click.Path(exists=True, readable=True),
+              help="Path to the hmmdefs")
+@click.option("-a", "--adinrec", "adinrec_executable", required=True, type=click.Path(exists=True, executable=True),
+              help="Path to the adinrec executable")
+@click.option("-t", "--transcript", "transcript", required=True, prompt=True, type=str, help="Transcript")
+@click.option("-s", "--speaker", "speaker", required=True, type=str, help="Speaker ID")
+@click.option("-r", "--record-utterance", "utterance", required=True, type=str, help="Utterance Record File")
+@click.option("-o", "--out", "outfile", required=False, type=str, help="Output file")
+@click.option("-l", "--lab", "labfile", required=False, type=str, help="Output Lab file")
+@click.option('--vvproj', 'outtype', flag_value="vvproj", is_flag=True, help="Output as Voicevox Project File")
+@click.option("-f", "--force-pitch", "outtype", flag_value="force_pitch", is_flag=True,
+              help="Force pitch using WORLD Vocoder")
+@click.option("-b", "--base-pitch", "base_pitch", default=5.775, show_default=True, type=float, help="Base pitch")
+@click.option("-z", "--hz-to-pitch", "hz_to_pitch", default=0.00625, show_default=True, type=float, help="Hz to pitch")
+def command(julius_executable,
+            hmmdefs,
+            adinrec_executable,
+            transcript,
+            speaker,
+            utterance,
+            outfile,
+            labfile,
+            outtype,
+            base_pitch,
+            hz_to_pitch):
+    asyncio.run(
+        main(julius_executable, hmmdefs, adinrec_executable, transcript, speaker, utterance, outfile, labfile, outtype,
+             base_pitch, hz_to_pitch), debug=True)

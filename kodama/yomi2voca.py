@@ -1,5 +1,3 @@
-
-
 def yomi2voca(yomi: str) -> str:
     if yomi == 'ヴァ':
         return 'b a'
