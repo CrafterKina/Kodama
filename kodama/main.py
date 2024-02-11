@@ -20,7 +20,6 @@ from collections.abc import Iterable
 
 import click
 import librosa
-import matplotlib.pyplot as plt
 import numpy as np
 import numpy.ma as ma
 import pyworld
@@ -102,35 +101,6 @@ def is_vowel(phoneme: str) -> bool:
     return phoneme in ['a', 'e', 'i', 'u', 'o', 'N']
 
 
-EPSILON = 1e-8
-
-
-def savefig(figlist, log=True):
-    # h = 10
-    n = len(figlist)
-    # peek into instances
-    f = figlist[0]
-    if len(f.shape) == 1:
-        plt.figure()
-        for i, f in enumerate(figlist):
-            plt.subplot(n, 1, i + 1)
-            if len(f.shape) == 1:
-                plt.plot(f)
-                plt.xlim([0, len(f)])
-    elif len(f.shape) == 2:
-        plt.figure()
-        for i, f in enumerate(figlist):
-            plt.subplot(n, 1, i + 1)
-            if log:
-                x = np.log(f + EPSILON)
-            else:
-                x = f + EPSILON
-            plt.imshow(x.T, origin='lower', interpolation='none', aspect='auto', extent=(0, x.shape[0], 0, x.shape[1]))
-    else:
-        raise ValueError('Input dimension must < 3.')
-    plt.show()
-
-
 def interpf0(f0):
     v = np.arange(f0.size)[~f0.mask]
     f0 = Akima1DInterpolator(v, f0[~f0.mask])(np.arange(f0.size))
@@ -178,7 +148,7 @@ def make_vvproj(audio_query, speaker, transcript):
             key: {
                 "text": transcript,
                 "engineId": "074fc39e-678b-4c13-8916-ffca8d505d1d",
-                "styleId": speaker,
+                "styleId": int(speaker),
                 "query": {
                     "accentPhrases": [
                         {

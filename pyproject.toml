@@ -21,8 +21,10 @@ numba = "0.59.0rc1"
 librosa = "^0.10.1"
 mypy = "^1.8.0"
 setuptools = "^69.0.3"
-matplotlib = "^3.8.2"
 click = "^8.1.7"
+
+[tool.poetry.group.dev.dependencies]
+matplotlib = "^3.8.2"
 
 
 [build-system]
