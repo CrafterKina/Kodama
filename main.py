@@ -1,31 +1,36 @@
 import asyncio
 import io
-import itertools
 import json
-import math
-import os
-import pathlib
-import uuid
-
-import matplotlib.pyplot as plt
 import re
 import tempfile
-from pprint import pprint
+import uuid
+from collections.abc import Iterable
 
 import librosa
-
-from asyncio import StreamWriter, StreamReader
-from collections.abc import Collection, Iterable
-import pandas as pd
+import matplotlib.pyplot as plt
 import numpy as np
 import numpy.ma as ma
 import pyworld
-import scipy.stats
+from scipy.interpolate import Akima1DInterpolator, interp1d
 import soundfile
-
 from voicevox import Client
 
 from yomi2voca import yomi2voca
+
+phoneme_pattern = re.compile(r"^\[\s*(\d+)\s*(\d+)]\s*[\d\-.]+\s*(.+?)\r?$", flags=re.MULTILINE)
+
+julius_executable = "julius.exe"
+hmmdefs = "hmmdefs_monof_mix16_gid.binhmm"
+adinrec_executable = "adinrec.exe"
+
+
+transcript = "本日は晴天なり"
+speaker = 8
+utterance = "./record.wav"
+outfile = "./output.wav"
+force_pitch = False
+base_pitch = 5.775
+hz_to_pitch = 0.00625
 
 
 def make_words(voca: str, silence_at_ends: bool = True) -> list[str]:
@@ -64,8 +69,8 @@ async def phoneme_segmentation(utterance, gram_dfa, gram_dict):
         dict_file.close()
         proc = await asyncio.create_subprocess_shell(
             f"""echo {utterance} |\
-                julius.exe\
-                 -h hmmdefs_monof_mix16_gid.binhmm\
+                {julius_executable}\
+                 -h {hmmdefs}\
                   -dfa {dfa_file.name}\
                    -v {dict_file.name}\
                     -palign\
@@ -126,6 +131,14 @@ def savefig(figlist, log=True):
     plt.show()
 
 
+def interpf0(f0):
+    v = np.arange(f0.size)[~f0.mask]
+    f0 = Akima1DInterpolator(v, f0[~f0.mask])(np.arange(f0.size))
+    f0[:v[0]] = f0[v[0]]
+    f0[v[-1] + 1:] = f0[v[-1]]
+    return f0
+
+
 def align_array(f0, f0_):
     f0 = ma.masked_equal(f0, 0.)
     f0 = (f0 - np.mean(f0)) + np.mean(f0)
@@ -139,8 +152,8 @@ def align_array(f0, f0_):
     modifier[modifier > 0] = 1
     f0 = f0 * modifier
     f0 = ma.masked_equal(f0, 0.)
-    f0 = ma.filled(f0 - np.mean(f0) + np.mean(ma.masked_equal(f0_, 0.)), np.nan)
-    f0 = pd.Series(f0).interpolate(method='cubic').to_numpy(na_value=0.)
+    f0 = f0 - np.mean(f0) + np.mean(ma.masked_equal(f0_, 0.))
+    f0 = interpf0(f0)
     modifier = np.copy(f0_)
     modifier[modifier > 0] = 1
     f0 = f0 * modifier
@@ -156,21 +169,10 @@ def vowel_mask(frame_segmentation, size):
     return result
 
 
-phoneme_pattern = re.compile(r"^\[\s*(\d+)\s*(\d+)]\s*[\d\-.]+\s*(.+?)\r?$", flags=re.MULTILINE)
-
-transcript = "本日は晴天なり"
-speaker = 8
-utterance = "./record.wav"
-outfile = "./output.wav"
-force_pitch = False
-base_pitch = 5.775
-hz_to_pitch = 0.00625
-
-
 async def main():
-    proc = await asyncio.create_subprocess_shell(f"adinrec.exe {utterance}", shell=True, stdout=asyncio.subprocess.PIPE,
+    proc = await asyncio.create_subprocess_shell(f"{adinrec_executable} {utterance}", shell=True, stdout=asyncio.subprocess.PIPE,
                                                  stderr=asyncio.subprocess.PIPE)
-
+    print("waiting record instance...")
     await proc.stderr.readuntil(b'please speak')
     print("please speak")
 
@@ -205,11 +207,7 @@ async def main():
 
         f0 = ma.array(f0, mask=vowel_mask(frame_segmentation, f0.shape))
 
-        f0 = ma.masked_invalid(pd.Series(ma.filled(f0, np.nan)).
-                               interpolate(method='akima', limit_area='inside').
-                               interpolate(method='linear', limit_area='outside', limit_direction='both').
-                               to_numpy(na_value=np.nan)
-                               )
+        f0 = interpf0(f0)
 
         f0 = ma.array(f0, mask=vowel_mask(frame_segmentation, f0.shape))
 
