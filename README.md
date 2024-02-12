@@ -12,7 +12,7 @@ Juliusでの音素セグメンテーション + WORLDの音高解析でなんと
 * ``poetry install``
 * [Julius](https://github.com/julius-speech/julius/releases/tag/v4.6)の実行ファイルを持ってくる
 * hmmdefs(音響モデル)は[hmmdefs_monof_mix16_gid.binhmm](https://github.com/julius-speech/segmentation-kit/blob/master/models/hmmdefs_monof_mix16_gid.binhmm)でしか動作検証していない
-* ``poetry run kodama -j .\julius.exe -h .\hmmdefs_monof_mix16_gid.binhmm -a .\adinrec.exe -s 8 -o output.vvproj -r outrec.wav -t こんにちは`` とかで動きます
+* ``poetry run kodama -j .\julius.exe -h .\hmmdefs_monof_mix16_gid.binhmm -a .\adinrec.exe -s 8 -o output.wav -r outrec.wav -t こんにちは`` とかで動きます
 * helpオプションでオプションの詳細が見れます
 
 ## 動作環境
