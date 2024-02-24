@@ -1,0 +1,1 @@
+Kodama Proxyは追加の制約を現時点で設けていませんが、VOICEVOX EngineのTOSに従ってください。

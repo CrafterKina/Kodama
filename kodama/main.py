@@ -18,13 +18,15 @@ import tempfile
 import uuid
 from collections.abc import Iterable
 
+import aiohttp.web
 import click
-import librosa
+import multidict
 import numpy as np
 import numpy.ma as ma
 import pyworld
-from scipy.interpolate import Akima1DInterpolator
 import soundfile
+import voicevox.audio_query as v
+from scipy.interpolate import Akima1DInterpolator
 from voicevox import Client
 
 from kodama.yomi2voca import yomi2voca
@@ -89,11 +91,11 @@ async def phoneme_segmentation(utterance, julius_executable, hmmdefs, gram_dfa, 
 
         proc.terminate()
 
-        segmentation_matches = phoneme_pattern.finditer(result)
+        segmentation_matches = phoneme_pattern.findall(result)
 
     return [
-        (int(m.group(1)), int(m.group(2)), m.group(3))
-        for m in segmentation_matches
+        (int(x), int(y), z)
+        for x, y, z in segmentation_matches
     ]
 
 
@@ -214,66 +216,17 @@ async def main(julius_executable,
             transcript, speaker=speaker
         )
 
-        morae = [mora
-                 for accent_phrase in audio_query.accent_phrases
-                 for mora in accent_phrase.moras + ([accent_phrase.pause_mora] if accent_phrase.pause_mora else [])
-                 ]
-
-        print([yomi2voca(mora.text) for mora in morae])
-
-        voca = ' '.join([yomi2voca(mora.text) for mora in morae])
-        words = make_words(voca, silence_at_ends=True)
-        gram_dict = make_gram_dict(words)
-        gram_dfa = make_sequential_gram_dfa(len(words))
-        print(gram_dfa)
-        print(gram_dict)
-
-        frame_segmentation = await phoneme_segmentation(utterance, julius_executable, hmmdefs, gram_dfa, gram_dict)
-
-        f0, sp, ap = pyworld.wav2world(x, fs, frame_period=10.)
-        f0 = ma.masked_equal(f0, 0.)
-
-        f0 = ma.array(f0, mask=vowel_mask(frame_segmentation, f0.shape))
-
-        f0 = interpf0(f0)
-
-        f0 = ma.array(f0, mask=vowel_mask(frame_segmentation, f0.shape))
-
-        zscores = f0 - np.mean(f0)
-
-        second_segmentation = [
-            (begin * 0.01, (end + 1) * 0.01) for begin, end, _ in frame_segmentation
-        ]
-
-        phoneme_lengths = [e - s for s, e in second_segmentation]
-        zs = [np.mean(zscores[s:e]) for s, e, _ in frame_segmentation]
-
-        phoneme_lengths_iter = iter(phoneme_lengths)
-        z_iter = iter(zs)
-
-        # omit silence
-        audio_query.pre_phoneme_length = next(phoneme_lengths_iter)
-        next(z_iter)
-        for mora in morae:
-            if mora.consonant:
-                mora.consonant_length = next(phoneme_lengths_iter)
-                next(z_iter)
-
-            z = next(z_iter)
-            if ma.is_masked(z):
-                z = 0
-
-            mora.vowel_length = next(phoneme_lengths_iter)
-            mora.pitch = base_pitch + z * hz_to_pitch
-
-        audio_query.post_phoneme_length = next(phoneme_lengths_iter)
-
+        pre, post = await refine_audio_query(audio_query.accent_phrases, julius_executable, hmmdefs, utterance,
+                                             hz_to_pitch, base_pitch, x, fs)
+        audio_query.pre_phoneme_length = pre
+        audio_query.post_phoneme_length = post
         try:
             resp = await audio_query.synthesis(speaker=8)
         except Exception as e:
             print(e)
 
     if outtype == "force_pitch":
+        import librosa
         x_, fs_ = soundfile.read(io.BytesIO(resp))
         x = librosa.resample(x, orig_sr=fs, target_sr=fs_)
         f0_, sp_, ap_ = pyworld.wav2world(x_, fs_, frame_period=5.)
@@ -290,14 +243,129 @@ async def main(julius_executable,
         with open(outfile, mode="wb") as f:
             f.write(resp)
 
-    if labfile is not None:
-        with open(labfile, "wb") as f:
-            f.write("\n".join([
-                f"{s:.7f} {e:.7f} {p}" for s, e, p in frame_segmentation
-            ]).encode())
+
+async def refine_audio_query(accent_phrases, julius_executable, hmmdefs, utterance, hz_to_pitch, base_pitch, x, fs):
+    morae = [mora
+             for accent_phrase in accent_phrases
+             for mora in accent_phrase.moras + ([accent_phrase.pause_mora] if accent_phrase.pause_mora else [])
+             ]
+    print([yomi2voca(mora.text) for mora in morae])
+    voca = ' '.join([yomi2voca(mora.text) for mora in morae])
+    words = make_words(voca, silence_at_ends=True)
+    gram_dict = make_gram_dict(words)
+    gram_dfa = make_sequential_gram_dfa(len(words))
+    print(gram_dfa)
+    print(gram_dict)
+    frame_segmentation = await phoneme_segmentation(utterance, julius_executable, hmmdefs, gram_dfa, gram_dict)
+    f0, sp, ap = pyworld.wav2world(x, fs, frame_period=10.)
+    return align_pitch_and_length(base_pitch, morae, frame_segmentation, f0, hz_to_pitch)
 
 
-@click.command()
+def align_pitch_and_length(base_pitch, morae, frame_segmentation, f0, hz_to_pitch):
+    f0 = ma.masked_equal(f0, 0.)
+    f0 = ma.array(f0, mask=vowel_mask(frame_segmentation, f0.shape))
+    f0 = interpf0(f0)
+    f0 = ma.array(f0, mask=vowel_mask(frame_segmentation, f0.shape))
+    zscores = f0 - np.mean(f0)
+    second_segmentation = [
+        (begin * 0.01, (end + 1) * 0.01) for begin, end, _ in frame_segmentation
+    ]
+    phoneme_lengths = [e - s for s, e in second_segmentation]
+    zs = [np.mean(zscores[s:e]) for s, e, _ in frame_segmentation]
+    phoneme_lengths_iter = iter(phoneme_lengths)
+    z_iter = iter(zs)
+    # omit silence
+    pre_phoneme_length = next(phoneme_lengths_iter)
+    next(z_iter)
+    for mora in morae:
+        if mora.consonant:
+            mora.consonant_length = next(phoneme_lengths_iter)
+            next(z_iter)
+
+        z = next(z_iter)
+        if ma.is_masked(z):
+            z = 0
+
+        mora.vowel_length = next(phoneme_lengths_iter)
+        mora.pitch = base_pitch + z * hz_to_pitch
+    post_phoneme_length = next(phoneme_lengths_iter)
+
+    return pre_phoneme_length, post_phoneme_length
+
+
+def make_proxy(
+        julius_executable,
+        hmmdefs,
+        adinrec_executable,
+        base_pitch,
+        hz_to_pitch):
+    @aiohttp.web.middleware
+    async def proxy(request: aiohttp.web.Request, handler):
+        async with aiohttp.request(request.method,
+                                   request.url.with_host("127.0.0.1").with_port(50021),
+                                   data=await request.read(),
+                                   headers=request.headers) as r:
+            if request.path == "/accent_phrases":
+                print("intercept")
+                raw_phrases_str = await r.text()
+                raw_phrases = json.loads(raw_phrases_str)
+                accent_phrases = [
+                    v.AccentPhrase(accent_phrase) for accent_phrase in raw_phrases
+                ]
+                with tempfile.NamedTemporaryFile(delete=True, suffix=".wav", delete_on_close=False) as utterance:
+                    proc = await asyncio.create_subprocess_shell(f"{adinrec_executable} {utterance.name}", shell=True,
+                                                                 stdout=asyncio.subprocess.PIPE,
+                                                                 stderr=asyncio.subprocess.PIPE)
+                    print("waiting record instance...")
+                    await proc.stderr.readuntil(b'please speak')
+                    print("please speak")
+
+                    stdout, stderr = await proc.communicate()
+                    print(stderr.decode())
+
+                    x, fs = soundfile.read(utterance)
+                    await refine_audio_query(
+                        accent_phrases, julius_executable, hmmdefs, utterance.name, hz_to_pitch, base_pitch, x, fs)
+
+                res_dict = [
+                    accent_phrase.to_dict() for accent_phrase in accent_phrases
+                ]
+                res_json = json.dumps(res_dict, separators=(',', ':'), ensure_ascii=False)
+                headers = multidict.CIMultiDict(**r.headers)
+                del headers["content-length"]
+                return aiohttp.web.Response(body=res_json.encode(), status=r.status, headers=headers)
+            else:
+                return aiohttp.web.Response(body=await r.read(), status=r.status, headers=r.headers)
+
+    return proxy
+
+
+@click.group()
+def cli():
+    pass
+
+
+@cli.command()
+@click.option("-j", "--julius", "julius_executable", required=True, type=click.Path(exists=True, executable=True),
+              help="Path to the julius")
+@click.option("-h", "--hmmdefs", "hmmdefs", required=True, type=click.Path(exists=True, readable=True),
+              help="Path to the hmmdefs")
+@click.option("-a", "--adinrec", "adinrec_executable", required=True, type=click.Path(exists=True, executable=True),
+              help="Path to the adinrec executable")
+@click.option("-b", "--base-pitch", "base_pitch", default=5.775, show_default=True, type=float, help="Base pitch")
+@click.option("-z", "--hz-to-pitch", "hz_to_pitch", default=0.00625, show_default=True, type=float, help="Hz to pitch")
+def serve(julius_executable,
+          hmmdefs,
+          adinrec_executable,
+          base_pitch,
+          hz_to_pitch
+          ):
+    app = aiohttp.web.Application(
+        middlewares=[make_proxy(julius_executable, hmmdefs, adinrec_executable, base_pitch, hz_to_pitch)])
+    aiohttp.web.run_app(app, port=51021)
+
+
+@cli.command()
 @click.option("-j", "--julius", "julius_executable", required=True, type=click.Path(exists=True, executable=True),
               help="Path to the julius")
 @click.option("-h", "--hmmdefs", "hmmdefs", required=True, type=click.Path(exists=True, readable=True),
@@ -328,3 +396,7 @@ def command(julius_executable,
     asyncio.run(
         main(julius_executable, hmmdefs, adinrec_executable, transcript, speaker, utterance, outfile, labfile, outtype,
              base_pitch, hz_to_pitch), debug=True)
+
+
+if __name__ == "__main__":
+    cli()

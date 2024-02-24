@@ -7,6 +7,7 @@ Juliusでの音素セグメンテーション + WORLDの音高解析でなんと
 * Worldによるピッチ解析による音高補正
 * Voicevox出力に対するピッチ強制
 * vvproj形式(Voicevox プロジェクト)への出力
+* VOICEVOX Proxy Engine機能
 
 ## INSTALL
 * ``poetry install``
@@ -14,6 +15,11 @@ Juliusでの音素セグメンテーション + WORLDの音高解析でなんと
 * hmmdefs(音響モデル)は[hmmdefs_monof_mix16_gid.binhmm](https://github.com/julius-speech/segmentation-kit/blob/master/models/hmmdefs_monof_mix16_gid.binhmm)でしか動作検証していない
 * ``poetry run kodama -j .\julius.exe -h .\hmmdefs_monof_mix16_gid.binhmm -a .\adinrec.exe -s 8 -o output.wav -r outrec.wav -t こんにちは`` とかで動きます
 * helpオプションでオプションの詳細が見れます
+
+
+## VOICEVOX Proxy Engine機能
+run.batの中身に書かれている引数を適当なものにしたうえで、プロジェクトディレクトリをエンジンディレクトリとしてVOICEVOXに登録すると、Voicevox Engineとして働くようになります。
+
 
 ## 動作環境
 * Windows
